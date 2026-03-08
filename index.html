@@ -159,9 +159,16 @@
       transition: background 0.15s, color 0.15s;
     }
 
-    .dest-actions button:hover       { background: #eee; color: #333; }
-    .dest-actions .btn-del:hover     { background: #fde; color: #e74c3c; }
-    .dest-actions button:disabled    { opacity: 0.25; cursor: default; }
+    .dest-actions button:hover    { background: #eee; color: #333; }
+    .dest-actions button:disabled { opacity: 0.25; cursor: default; }
+
+    /* Remove button — always visible in red */
+    .btn-del {
+      color: #e74c3c !important;
+      opacity: 0.6;
+      font-size: 1rem !important;
+    }
+    .btn-del:hover { background: #fde !important; opacity: 1; }
 
     .empty-state {
       padding: 48px 20px;
@@ -201,6 +208,14 @@
     /* ── Map ──────────────────────────────────── */
     #map { flex: 1; }
 
+    /* ── Google Places autocomplete dropdown ──── */
+    .pac-container {
+      border-radius: 6px;
+      border: 1px solid #ddd;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+
     /* ── Responsive ───────────────────────────── */
     @media (max-width: 600px) {
       .app { flex-direction: column; }
@@ -223,7 +238,7 @@
     <div class="sidebar-header">
       <h2>Destinations</h2>
       <div class="input-row">
-        <input type="text" id="placeInput" placeholder="e.g. Paris, France" />
+        <input type="text" id="placeInput" placeholder="Search for a place..." autocomplete="off" />
         <button class="btn-add" id="addBtn" onclick="addDestination()">Add</button>
       </div>
       <div class="status-msg" id="statusMsg"></div>
@@ -241,12 +256,19 @@
   <div id="map"></div>
 </div>
 
+<!-- ─────────────────────────────────────────────────────────────────────────
+     GOOGLE MAPS API KEY
+     Replace YOUR_API_KEY below with your key from:
+     https://console.cloud.google.com/  (enable "Maps JavaScript API" + "Places API")
+     ───────────────────────────────────────────────────────────────────────── -->
+<script src="https://maps.googleapis.com/maps/api/js?key=YOUR_API_KEY&libraries=places&callback=initAutocomplete" async defer></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
   // ── State ────────────────────────────────────────────────────────────────────
   let destinations = [];  // [{ name, displayName, lat, lng }]
   let markers = [];
   let routeLine = null;
+  let selectedPlace = null;  // holds the Google Place result when user picks a suggestion
 
   // ── Map setup ────────────────────────────────────────────────────────────────
   const map = L.map('map').setView([20, 0], 2);
@@ -256,7 +278,24 @@
     maxZoom: 19
   }).addTo(map);
 
-  // ── Geocoding (Nominatim) ────────────────────────────────────────────────────
+  // ── Google Places Autocomplete ────────────────────────────────────────────────
+  function initAutocomplete() {
+    const input = document.getElementById('placeInput');
+    const ac = new google.maps.places.Autocomplete(input, { types: ['geocode'] });
+
+    ac.addListener('place_changed', () => {
+      const place = ac.getPlace();
+      if (place && place.geometry) {
+        selectedPlace = place;
+      }
+    });
+
+    // If the user edits the text after picking a suggestion, clear the cached place
+    input.addEventListener('input', () => { selectedPlace = null; });
+  }
+
+  // ── Geocoding fallback (Nominatim) ───────────────────────────────────────────
+  // Used only if Google Places API key is not set or user types freely without picking a suggestion
   async function geocode(placeName) {
     const url = 'https://nominatim.openstreetmap.org/search?q='
       + encodeURIComponent(placeName)
@@ -271,7 +310,6 @@
     const data = await res.json();
     if (!data.length) throw new Error('Could not find "' + placeName + '". Try being more specific.');
 
-    // Shorten the display name to city + country
     const parts = data[0].display_name.split(',').map(s => s.trim());
     const displayName = parts.length >= 2
       ? parts[0] + ', ' + parts[parts.length - 1]
@@ -286,23 +324,37 @@
     const name = input.value.trim();
     if (!name) return;
 
-    setStatus('Searching for ' + name + '...', 'loading');
-    setInputsDisabled(true);
+    let geo;
 
-    try {
-      const geo = await geocode(name);
-      destinations.push({ name, displayName: geo.displayName, lat: geo.lat, lng: geo.lng });
-      input.value = '';
-      setStatus('Added: ' + geo.displayName, 'success');
-      save();
-      renderList();
-      renderMap();
-    } catch (err) {
-      setStatus(err.message, 'error');
-    } finally {
-      setInputsDisabled(false);
-      input.focus();
+    if (selectedPlace && selectedPlace.geometry) {
+      // Use coordinates directly from Google Places — no extra network request needed
+      geo = {
+        lat: selectedPlace.geometry.location.lat(),
+        lng: selectedPlace.geometry.location.lng(),
+        displayName: selectedPlace.formatted_address || selectedPlace.name || name
+      };
+      selectedPlace = null;
+    } else {
+      // Fallback: geocode with Nominatim
+      setStatus('Searching for ' + name + '...', 'loading');
+      setInputsDisabled(true);
+      try {
+        geo = await geocode(name);
+      } catch (err) {
+        setStatus(err.message, 'error');
+        setInputsDisabled(false);
+        return;
+      }
     }
+
+    destinations.push({ name, displayName: geo.displayName, lat: geo.lat, lng: geo.lng });
+    input.value = '';
+    setStatus('Added: ' + geo.displayName, 'success');
+    save();
+    renderList();
+    renderMap();
+    setInputsDisabled(false);
+    input.focus();
   }
 
   // ── Reorder / remove ─────────────────────────────────────────────────────────
@@ -351,7 +403,7 @@
         <div class="dest-actions">
           <button onclick="moveUp(${i})"   ${i === 0     ? 'disabled' : ''} title="Move up">&#8593;</button>
           <button onclick="moveDown(${i})" ${i === n - 1 ? 'disabled' : ''} title="Move down">&#8595;</button>
-          <button class="btn-del" onclick="remove(${i})" title="Remove">&#10005;</button>
+          <button class="btn-del" onclick="remove(${i})" title="Remove">&#128465;</button>
         </div>
       </div>
     `).join('');
@@ -359,7 +411,6 @@
 
   // ── Render map ───────────────────────────────────────────────────────────────
   function renderMap() {
-    // Clear previous markers and route line
     markers.forEach(m => map.removeLayer(m));
     markers = [];
     if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
@@ -368,7 +419,6 @@
 
     const latlngs = destinations.map(d => [d.lat, d.lng]);
 
-    // Draw dashed route line between all stops
     if (destinations.length > 1) {
       routeLine = L.polyline(latlngs, {
         color: '#3498db',
@@ -378,7 +428,6 @@
       }).addTo(map);
     }
 
-    // Draw a numbered circle marker at each stop
     destinations.forEach((d, i) => {
       const icon = L.divIcon({
         className: '',
@@ -402,7 +451,6 @@
       markers.push(marker);
     });
 
-    // Zoom/pan to fit all markers with some padding
     map.fitBounds(L.latLngBounds(latlngs), { padding: [50, 50] });
   }
 
@@ -432,7 +480,6 @@
     document.getElementById('placeInput').disabled = val;
   }
 
-  // Press Enter to add
   document.getElementById('placeInput').addEventListener('keydown', e => {
     if (e.key === 'Enter') addDestination();
   });
