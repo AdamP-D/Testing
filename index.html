@@ -208,13 +208,37 @@
     /* ── Map ──────────────────────────────────── */
     #map { flex: 1; }
 
-    /* ── Google Places autocomplete dropdown ──── */
-    .pac-container {
-      border-radius: 6px;
-      border: 1px solid #ddd;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    /* ── Photon autocomplete dropdown ───────────── */
+    .autocomplete-wrapper {
+      position: relative;
     }
+
+    .autocomplete-dropdown {
+      position: absolute;
+      top: calc(100% + 4px);
+      left: 0;
+      right: 0;
+      background: white;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+      z-index: 1000;
+      overflow: hidden;
+    }
+
+    .autocomplete-item {
+      padding: 9px 12px;
+      font-size: 0.85rem;
+      cursor: pointer;
+      border-bottom: 1px solid #f0f0f0;
+      line-height: 1.3;
+    }
+
+    .autocomplete-item:last-child { border-bottom: none; }
+    .autocomplete-item:hover, .autocomplete-item.active { background: #f0f7ff; }
+
+    .autocomplete-item .place-name    { color: #222; font-weight: 500; }
+    .autocomplete-item .place-detail  { color: #999; font-size: 0.78rem; margin-top: 1px; }
 
     /* ── Responsive ───────────────────────────── */
     @media (max-width: 600px) {
@@ -238,7 +262,10 @@
     <div class="sidebar-header">
       <h2>Destinations</h2>
       <div class="input-row">
-        <input type="text" id="placeInput" placeholder="Search for a place..." autocomplete="off" />
+        <div class="autocomplete-wrapper" style="flex:1; position:relative;">
+          <input type="text" id="placeInput" placeholder="Search for a place..." autocomplete="off" style="width:100%;" />
+          <div class="autocomplete-dropdown" id="acDropdown" style="display:none;"></div>
+        </div>
         <button class="btn-add" id="addBtn" onclick="addDestination()">Add</button>
       </div>
       <div class="status-msg" id="statusMsg"></div>
@@ -256,19 +283,13 @@
   <div id="map"></div>
 </div>
 
-<!-- ─────────────────────────────────────────────────────────────────────────
-     GOOGLE MAPS API KEY
-     Replace YOUR_API_KEY below with your key from:
-     https://console.cloud.google.com/  (enable "Maps JavaScript API" + "Places API")
-     ───────────────────────────────────────────────────────────────────────── -->
-<script src="https://maps.googleapis.com/maps/api/js?key=YOUR_API_KEY&libraries=places&callback=initAutocomplete" async defer></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
   // ── State ────────────────────────────────────────────────────────────────────
   let destinations = [];  // [{ name, displayName, lat, lng }]
   let markers = [];
   let routeLine = null;
-  let selectedPlace = null;  // holds the Google Place result when user picks a suggestion
+  let selectedPlace = null;  // holds a Photon result when user picks a suggestion
 
   // ── Map setup ────────────────────────────────────────────────────────────────
   const map = L.map('map').setView([20, 0], 2);
@@ -278,24 +299,91 @@
     maxZoom: 19
   }).addTo(map);
 
-  // ── Google Places Autocomplete ────────────────────────────────────────────────
-  function initAutocomplete() {
-    const input = document.getElementById('placeInput');
-    const ac = new google.maps.places.Autocomplete(input, { types: ['geocode'] });
+  // ── Photon Autocomplete (komoot.io) ──────────────────────────────────────────
+  const dropdown = document.getElementById('acDropdown');
+  let acIndex = -1;
+  let debounceTimer = null;
 
-    ac.addListener('place_changed', () => {
-      const place = ac.getPlace();
-      if (place && place.geometry) {
-        selectedPlace = place;
-      }
-    });
-
-    // If the user edits the text after picking a suggestion, clear the cached place
-    input.addEventListener('input', () => { selectedPlace = null; });
+  function photonLabel(props) {
+    const parts = [props.name, props.city, props.state, props.country].filter(Boolean);
+    // Remove consecutive duplicates (e.g. city === name)
+    const unique = parts.filter((p, i) => i === 0 || p !== parts[i - 1]);
+    return { name: unique[0] || '', detail: unique.slice(1).join(', ') };
   }
 
+  function showDropdown(features) {
+    if (!features.length) { hideDropdown(); return; }
+    acIndex = -1;
+    dropdown.innerHTML = features.map((f, i) => {
+      const { name, detail } = photonLabel(f.properties);
+      return `<div class="autocomplete-item" data-i="${i}">
+        <div class="place-name">${name}</div>
+        ${detail ? `<div class="place-detail">${detail}</div>` : ''}
+      </div>`;
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.autocomplete-item').forEach(el => {
+      el.addEventListener('mousedown', e => {
+        e.preventDefault();
+        pickSuggestion(features[+el.dataset.i]);
+      });
+    });
+  }
+
+  function hideDropdown() {
+    dropdown.style.display = 'none';
+    dropdown.innerHTML = '';
+    acIndex = -1;
+  }
+
+  function pickSuggestion(feature) {
+    const { name, detail } = photonLabel(feature.properties);
+    const displayName = detail ? name + ', ' + detail : name;
+    document.getElementById('placeInput').value = displayName;
+    selectedPlace = {
+      lat: feature.geometry.coordinates[1],
+      lng: feature.geometry.coordinates[0],
+      displayName
+    };
+    hideDropdown();
+  }
+
+  document.getElementById('placeInput').addEventListener('input', e => {
+    selectedPlace = null;
+    const q = e.target.value.trim();
+    clearTimeout(debounceTimer);
+    if (q.length < 2) { hideDropdown(); return; }
+    debounceTimer = setTimeout(async () => {
+      try {
+        const res = await fetch('https://photon.komoot.io/api/?q=' + encodeURIComponent(q) + '&limit=5');
+        const data = await res.json();
+        showDropdown(data.features || []);
+      } catch { hideDropdown(); }
+    }, 250);
+  });
+
+  document.getElementById('placeInput').addEventListener('keydown', e => {
+    const items = dropdown.querySelectorAll('.autocomplete-item');
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      acIndex = Math.min(acIndex + 1, items.length - 1);
+      items.forEach((el, i) => el.classList.toggle('active', i === acIndex));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      acIndex = Math.max(acIndex - 1, -1);
+      items.forEach((el, i) => el.classList.toggle('active', i === acIndex));
+    } else if (e.key === 'Escape') {
+      hideDropdown();
+    }
+  });
+
+  document.addEventListener('click', e => {
+    if (!e.target.closest('.autocomplete-wrapper')) hideDropdown();
+  });
+
   // ── Geocoding fallback (Nominatim) ───────────────────────────────────────────
-  // Used only if Google Places API key is not set or user types freely without picking a suggestion
+  // Used only when the user types freely without picking a suggestion
   async function geocode(placeName) {
     const url = 'https://nominatim.openstreetmap.org/search?q='
       + encodeURIComponent(placeName)
@@ -326,14 +414,11 @@
 
     let geo;
 
-    if (selectedPlace && selectedPlace.geometry) {
-      // Use coordinates directly from Google Places — no extra network request needed
-      geo = {
-        lat: selectedPlace.geometry.location.lat(),
-        lng: selectedPlace.geometry.location.lng(),
-        displayName: selectedPlace.formatted_address || selectedPlace.name || name
-      };
+    if (selectedPlace) {
+      // Use coordinates directly from Photon selection — no extra network request needed
+      geo = { lat: selectedPlace.lat, lng: selectedPlace.lng, displayName: selectedPlace.displayName };
       selectedPlace = null;
+      hideDropdown();
     } else {
       // Fallback: geocode with Nominatim
       setStatus('Searching for ' + name + '...', 'loading');
@@ -481,7 +566,11 @@
   }
 
   document.getElementById('placeInput').addEventListener('keydown', e => {
-    if (e.key === 'Enter') addDestination();
+    if (e.key === 'Enter') {
+      const active = dropdown.querySelector('.autocomplete-item.active');
+      if (active) active.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      else addDestination();
+    }
   });
 
   // ── Init ─────────────────────────────────────────────────────────────────────
