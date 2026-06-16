@@ -20,7 +20,7 @@ import {
 } from 'jimu-core'
 import { loadArcGISJSAPIModules } from 'jimu-arcgis'
 import { Button, Alert, Loading } from 'jimu-ui'
-import type { IMConfig } from './config'
+import type { IMConfig } from '../config'
 
 const { useState, useEffect, useRef, useMemo, useCallback } = React
 
