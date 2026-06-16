@@ -72,6 +72,34 @@ const getStyle = () => css`
     border-radius: 10px;
     flex-shrink: 0;
   }
+  /* Unsaved-changes dot in the header */
+  .ced-dirty-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--ref-palette-orange-500, #f6a800);
+    flex-shrink: 0;
+    box-shadow: 0 0 0 2px rgba(255,255,255,0.4);
+  }
+  /* Header icon buttons (exit / close) */
+  .ced-header-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: rgba(255,255,255,0.15);
+    color: #fff;
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background 0.12s;
+  }
+  .ced-header-btn:hover { background: rgba(255,255,255,0.35); }
 
   /* ── Empty state ─────────────────────────────────── */
   .ced-empty {
@@ -133,14 +161,53 @@ const getStyle = () => css`
   .ced-nav {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    padding: 6px 14px;
+    gap: 8px;
+    padding: 6px 10px;
     background: var(--ref-palette-neutral-100, #f5f5f5);
     border-bottom: 1px solid var(--ref-palette-neutral-300, #e0e0e0);
     flex-shrink: 0;
   }
-  .ced-nav-label { font-size: 12px; color: var(--ref-palette-neutral-700, #555); }
-  .ced-nav-btns { display: flex; gap: 4px; }
+  .ced-nav-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 28px;
+    height: 28px;
+    padding: 0 6px;
+    border: 1px solid var(--ref-palette-neutral-400, #c0c0c0);
+    border-radius: 4px;
+    background: #fff;
+    color: var(--ref-palette-neutral-900, #333);
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s;
+  }
+  .ced-nav-btn:hover:not(:disabled) {
+    background: var(--ref-palette-primary-100, #e8f3fb);
+    border-color: var(--sys-color-primary-main, #0079c1);
+  }
+  .ced-nav-btn:disabled { opacity: 0.4; cursor: default; }
+  /* Jump-to dropdown filling the middle of the nav bar */
+  .ced-nav-select {
+    flex: 1;
+    height: 28px;
+    padding: 0 8px;
+    border: 1px solid var(--ref-palette-neutral-400, #c0c0c0);
+    border-radius: 4px;
+    background: #fff;
+    color: var(--ref-palette-neutral-900, #333);
+    font-size: 13px;
+    font-family: inherit;
+    cursor: pointer;
+    text-overflow: ellipsis;
+  }
+  .ced-nav-count {
+    flex: 1;
+    text-align: center;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ref-palette-neutral-800, #444);
+  }
 
   /* ── Form area ────────────────────────────────────── */
   .ced-form {
@@ -202,6 +269,17 @@ const getStyle = () => css`
   }
   .ced-confirm-delete p { margin: 0 0 8px; font-weight: 500; }
   .ced-confirm-btns { display: flex; gap: 8px; }
+
+  /* ── Unsaved-changes confirm ──────────────────────── */
+  .ced-confirm-unsaved {
+    margin: 0 14px 10px;
+    padding: 10px 12px;
+    background: var(--ref-palette-orange-100, #fff7e6);
+    border: 1px solid var(--ref-palette-orange-300, #ffd591);
+    border-radius: 4px;
+    font-size: 13px;
+  }
+  .ced-confirm-unsaved p { margin: 0 0 8px; font-weight: 500; }
 
   /* ── Feedback alert ───────────────────────────────── */
   .ced-alert { padding: 0 14px 10px; flex-shrink: 0; }
@@ -268,6 +346,13 @@ const Widget = (props: AllWidgetProps<IMConfig>) => {
   const [isDeleting, setIsDeleting] = useState(false)
   const [feedback, setFeedback] = useState<FeedbackMsg | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  // Tracks unsaved edits to the current feature
+  const [isDirty, setIsDirty] = useState(false)
+  // A navigation/exit action deferred until the user confirms discarding edits.
+  // 'nav' carries a target index; 'exit' clears the widget.
+  const [pendingAction, setPendingAction] = useState<
+    { type: 'nav'; index: number } | { type: 'exit' } | null
+  >(null)
 
   const esriFormRef = useRef<HTMLDivElement>(null)
   const featureFormRef = useRef<any>(null)
@@ -284,10 +369,15 @@ const Widget = (props: AllWidgetProps<IMConfig>) => {
     setCurrentIndex(0)
     setFeedback(null)
     setConfirmDelete(false)
+    setPendingAction(null)
+    setIsDirty(false)
   }, [totalCount])
 
   // ── Load / mount FeatureForm when current record changes ─────────────────
   useEffect(() => {
+    // Loading a (different) record starts from a clean, unedited state
+    setIsDirty(false)
+
     if (!currentRecord) {
       destroyEsriForm()
       setFields([])
@@ -369,6 +459,9 @@ const Widget = (props: AllWidgetProps<IMConfig>) => {
         layer
       })
 
+      // Mark the widget dirty as soon as the user changes any field value
+      form.on('value-change', () => { setIsDirty(true) })
+
       featureFormRef.current = form
       setUseEsriForm(true)
     } catch (err) {
@@ -389,6 +482,7 @@ const Widget = (props: AllWidgetProps<IMConfig>) => {
   const handleFieldChange = useCallback((name: string, value: any) => {
     setEditedValues(prev => ({ ...prev, [name]: value }))
     setFeedback(null)
+    setIsDirty(true)
   }, [])
 
   // ── Save ─────────────────────────────────────────────────────────────────
@@ -424,6 +518,7 @@ const Widget = (props: AllWidgetProps<IMConfig>) => {
       }
 
       setFeedback({ kind: 'success', text: 'Changes saved successfully.' })
+      setIsDirty(false)
     } catch (err: any) {
       setFeedback({ kind: 'error', text: `Save failed: ${err?.message ?? 'Unknown error'}` })
     } finally {
@@ -465,16 +560,67 @@ const Widget = (props: AllWidgetProps<IMConfig>) => {
     }
   }
 
-  // ── Reset ────────────────────────────────────────────────────────────────
+  // ── Discard edits (revert current feature to its stored values) ──────────
 
-  const handleReset = () => {
+  const handleDiscard = () => {
     const feature = getFeature(currentRecord)
     if (feature) {
       setEditedValues({ ...feature.attributes })
+      // Re-mounting the FeatureForm reloads the unedited feature values
       if (featureFormRef.current) mountEsriForm(feature)
     }
     setFeedback(null)
     setConfirmDelete(false)
+    setIsDirty(false)
+  }
+
+  // ── Navigation (guarded against unsaved edits) ───────────────────────────
+
+  /** Switch to a record by index, prompting first if there are unsaved edits. */
+  const goToIndex = (index: number) => {
+    if (index < 0 || index >= liveRecords.length || index === currentIndex) return
+    if (isDirty) {
+      setPendingAction({ type: 'nav', index })
+      return
+    }
+    setCurrentIndex(index)
+    setFeedback(null)
+    setConfirmDelete(false)
+  }
+
+  // ── Exit (clear the widget, guarded against unsaved edits) ───────────────
+
+  const clearWidget = () => {
+    MutableStoreManager.getInstance().updateStateValue(widgetId, 'selectedRecords', [])
+    setCurrentIndex(0)
+    setFeedback(null)
+    setConfirmDelete(false)
+    setIsDirty(false)
+    setPendingAction(null)
+  }
+
+  const handleExit = () => {
+    if (isDirty) {
+      setPendingAction({ type: 'exit' })
+      return
+    }
+    clearWidget()
+  }
+
+  // ── Resolve a pending action after the user confirms discarding edits ────
+
+  const confirmPendingAction = () => {
+    const action = pendingAction
+    setPendingAction(null)
+    setIsDirty(false)
+    if (!action) return
+    if (action.type === 'exit') {
+      clearWidget()
+    } else {
+      setCurrentIndex(action.index)
+      setFeedback(null)
+      setConfirmDelete(false)
+    }
   }
 
   // ── Fallback field rendering ─────────────────────────────────────────────
@@ -531,7 +677,18 @@ const Widget = (props: AllWidgetProps<IMConfig>) => {
       {/* Header */}
       <div className="ced-header">
         <span className="ced-header-title">{config?.customTitle || 'Custom Edit'}</span>
+        {isDirty && <span className="ced-dirty-dot" title="Unsaved changes" />}
         {hasRecords && <span className="ced-header-badge">{totalCount}</span>}
+        {hasRecords && (
+          <button
+            className="ced-header-btn"
+            title="Close editor"
+            aria-label="Close editor"
+            onClick={handleExit}
+          >
+            ✕
+          </button>
+        )}
       </div>
 
       {/* Empty state */}
@@ -549,33 +706,41 @@ const Widget = (props: AllWidgetProps<IMConfig>) => {
       {/* Content */}
       {hasRecords && (
         <>
-          {/* Optional feature list */}
-          {showList && (
-            <div className="ced-feature-list">
-              {liveRecords.map((rec, i) => (
-                <div key={rec.getId()} className={`ced-feature-list-item${i === currentIndex ? ' active' : ''}`}
-                  onClick={() => { setCurrentIndex(i); setFeedback(null); setConfirmDelete(false) }}>
-                  <span className="ced-feature-list-label">{getRecordLabel(rec, i)}</span>
-                  {i === currentIndex && <span aria-hidden>›</span>}
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Nav bar */}
-          {liveRecords.length > 1 && !showList && (
+          {/* Navigation bar — shown whenever more than one feature is selected */}
+          {liveRecords.length > 1 && (
             <div className="ced-nav">
-              <span className="ced-nav-label">Feature {currentIndex + 1} of {liveRecords.length}</span>
-              <div className="ced-nav-btns">
-                <Button size="sm" disabled={currentIndex === 0}
-                  onClick={() => { setCurrentIndex(i => i - 1); setFeedback(null); setConfirmDelete(false) }}>
-                  ‹ Prev
-                </Button>
-                <Button size="sm" disabled={currentIndex === liveRecords.length - 1}
-                  onClick={() => { setCurrentIndex(i => i + 1); setFeedback(null); setConfirmDelete(false) }}>
-                  Next ›
-                </Button>
-              </div>
+              <button className="ced-nav-btn" title="First feature" aria-label="First feature"
+                disabled={currentIndex === 0} onClick={() => goToIndex(0)}>
+                «
+              </button>
+              <button className="ced-nav-btn" title="Previous feature" aria-label="Previous feature"
+                disabled={currentIndex === 0} onClick={() => goToIndex(currentIndex - 1)}>
+                ‹
+              </button>
+
+              {showList
+                ? (
+                  <select className="ced-nav-select" value={currentIndex}
+                    onChange={e => goToIndex(parseInt(e.target.value, 10))}>
+                    {liveRecords.map((rec, i) => (
+                      <option key={rec.getId()} value={i}>
+                        {i + 1} / {liveRecords.length} — {getRecordLabel(rec, i)}
+                      </option>
+                    ))}
+                  </select>
+                  )
+                : (
+                  <span className="ced-nav-count">{currentIndex + 1} of {liveRecords.length}</span>
+                  )}
+
+              <button className="ced-nav-btn" title="Next feature" aria-label="Next feature"
+                disabled={currentIndex === liveRecords.length - 1} onClick={() => goToIndex(currentIndex + 1)}>
+                ›
+              </button>
+              <button className="ced-nav-btn" title="Last feature" aria-label="Last feature"
+                disabled={currentIndex === liveRecords.length - 1} onClick={() => goToIndex(liveRecords.length - 1)}>
+                »
+              </button>
             </div>
           )}
 
@@ -631,6 +796,17 @@ const Widget = (props: AllWidgetProps<IMConfig>) => {
             </div>
           )}
 
+          {/* Confirm discard of unsaved edits (navigation / exit) */}
+          {pendingAction && (
+            <div className="ced-confirm-unsaved">
+              <p>You have unsaved changes. Discard them and continue?</p>
+              <div className="ced-confirm-btns">
+                <Button size="sm" type="danger" onClick={confirmPendingAction}>Discard changes</Button>
+                <Button size="sm" onClick={() => setPendingAction(null)}>Keep editing</Button>
+              </div>
+            </div>
+          )}
+
           {/* Actions bar */}
           <div className="ced-actions">
             {canDelete && (
@@ -640,8 +816,11 @@ const Widget = (props: AllWidgetProps<IMConfig>) => {
               </Button>
             )}
             <div className="ced-spacer" />
-            <Button type="default" size="sm" disabled={isSaving || isDeleting} onClick={handleReset}>
-              Reset
+            <Button type="tertiary" size="sm" disabled={isSaving || isDeleting} onClick={handleExit}>
+              Exit
+            </Button>
+            <Button type="default" size="sm" disabled={isSaving || isDeleting || !isDirty} onClick={handleDiscard}>
+              Discard
             </Button>
             {canUpdate && (
               <Button type="primary" size="sm" disabled={isSaving || isDeleting} onClick={handleSave}>
