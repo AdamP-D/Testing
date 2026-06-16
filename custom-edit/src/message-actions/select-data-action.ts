@@ -4,19 +4,19 @@ import {
   type Message,
   type MessageDescription,
   type DataRecordsSelectionChangeMessage,
-  getAppStore,
-  appActions
+  MutableStoreManager
 } from 'jimu-core'
 
 /**
- * Receives DataRecordsSelectionChangeMessage from other widgets (e.g. Map widget
- * when features are selected) and stores a serializable snapshot of the record
- * IDs + raw attribute data into the widget's Redux state.
+ * Receives DataRecordsSelectionChangeMessage from other widgets (e.g. a Map
+ * widget when features are selected) and forwards the live DataRecord
+ * instances to the edit widget via MutableStoreManager — the same channel
+ * used by the "Edit" data action — so the widget always has a real Graphic
+ * to read field metadata from and to applyEdits() against.
  *
- * Why serialize? DataRecord instances are class objects that cannot be placed
- * directly into the Redux store. The widget's mutable-state channel (via the
- * data action) carries the live instances; this channel carries the metadata
- * so the widget can still react to map selections.
+ * DataRecord instances are class objects and cannot be placed in the Redux
+ * store (appActions.widgetStatePropChange requires serializable data), so
+ * MutableStoreManager is the correct mechanism here, not Redux.
  *
  * Wiring in Experience Builder:
  *   Map widget → "Data record selection change"
@@ -24,7 +24,6 @@ import {
  */
 export default class SelectDataAction extends AbstractMessageAction {
   filterMessageDescription (messageDescription: MessageDescription): boolean {
-    // messageDescription.messageType (not .type) is the correct property
     return messageDescription.messageType === MessageType.DataRecordsSelectionChange
   }
 
@@ -45,19 +44,10 @@ export default class SelectDataAction extends AbstractMessageAction {
     const msg = message as DataRecordsSelectionChangeMessage
     const records = msg.records ?? []
 
-    // Store only plain, serializable data — not the class instances
-    const serialized = records.map(r => ({
-      id: r.getId(),
-      data: r.getData() ?? {}
-    }))
-
-    // Also stash the count so the widget can show a badge even before the
-    // mutable-state channel resolves live records
-    getAppStore().dispatch(
-      appActions.widgetStatePropChange(this.widgetId, 'selectedRecordSnapshots', serialized)
-    )
-    getAppStore().dispatch(
-      appActions.widgetStatePropChange(this.widgetId, 'selectedCount', records.length)
+    MutableStoreManager.getInstance().updateStateValue(
+      this.widgetId,
+      'selectedRecords',
+      records
     )
 
     return true

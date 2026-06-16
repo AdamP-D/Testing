@@ -28,11 +28,6 @@ const { useState, useEffect, useRef, useMemo, useCallback } = React
 // Types
 // ---------------------------------------------------------------------------
 
-interface RecordSnapshot {
-  id: string
-  data: Record<string, any>
-}
-
 type FeedbackMsg = { kind: 'success' | 'error'; text: string }
 
 // ---------------------------------------------------------------------------
@@ -247,23 +242,18 @@ function getFeature (record: DataRecord): any {
 // ---------------------------------------------------------------------------
 
 const Widget = (props: AllWidgetProps<IMConfig>) => {
-  const { id: widgetId, config, stateProps, mutableStateProps, useDataSources } = props
+  const { id: widgetId, config, mutableStateProps, useDataSources } = props
 
-  // ── Record sources ──────────────────────────────────────────────────────
-  // Data action delivers live DataRecord[] via MutableStoreManager
+  // ── Record source ────────────────────────────────────────────────────────
+  // Both the message action and the data action deliver live DataRecord[]
+  // via MutableStoreManager, since DataRecord/Graphic instances cannot be
+  // placed in the Redux store. This is the single source of truth.
   const liveRecords: DataRecord[] = useMemo(
     () => (mutableStateProps as any)?.selectedRecords ?? [],
     [mutableStateProps]
   )
-  // Message action delivers serializable snapshots via Redux widgetState
-  const snapshots: RecordSnapshot[] = useMemo(
-    () => (stateProps as any)?.selectedRecordSnapshots ?? [],
-    [stateProps]
-  )
 
-  // Prefer live records (data action path); fall back to snapshot count for display
-  const hasLiveRecords = liveRecords.length > 0
-  const totalCount = hasLiveRecords ? liveRecords.length : snapshots.length
+  const totalCount = liveRecords.length
 
   // ── State ───────────────────────────────────────────────────────────────
   const [currentIndex, setCurrentIndex] = useState(0)
@@ -282,9 +272,7 @@ const Widget = (props: AllWidgetProps<IMConfig>) => {
   const esriFormRef = useRef<HTMLDivElement>(null)
   const featureFormRef = useRef<any>(null)
 
-  const currentRecord: DataRecord | null = hasLiveRecords
-    ? liveRecords[currentIndex] ?? liveRecords[0]
-    : null
+  const currentRecord: DataRecord | null = liveRecords[currentIndex] ?? liveRecords[0] ?? null
 
   const hasRecords = totalCount > 0
   const canUpdate = config?.enableUpdate !== false
