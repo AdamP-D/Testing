@@ -1,37 +1,45 @@
 import {
   AbstractDataAction,
-  DataRecordSet,
-  DataLevel,
-  getAppStore,
-  appActions,
-  DataRecord
+  type DataRecordSet,
+  type DataLevel,
+  MutableStoreManager,
+  DataSourceTypes
 } from 'jimu-core'
 
 /**
- * Data action that allows other widgets to push records into this edit widget
- * via the standard ExB data-action menu (the "..." or right-click action panel).
+ * Data action that surfaces an "Edit" option in the action menus of widgets
+ * that support data actions (Table, List, Feature Info, etc.).
  *
- * When enabled, an "Edit" option appears in any widget that supports data actions
- * (e.g., List, Table, Feature Info), allowing users to send those records to
- * this widget for editing without a map selection.
+ * When triggered it delivers the live DataRecord instances to the edit widget
+ * via MutableStoreManager — the correct channel for non-serializable class
+ * objects that cannot enter the Redux store.
+ *
+ * The edit widget reads these from props.mutableStateProps.selectedRecords.
  */
 export default class EditDataAction extends AbstractDataAction {
   async isSupported (
-    dataRecordSet: DataRecordSet,
-    dataLevel: DataLevel
+    dataSets: DataRecordSet[],
+    _dataLevel: DataLevel
   ): Promise<boolean> {
-    // Only surface the action when there are actual records to edit
-    return (dataRecordSet?.records?.length ?? 0) > 0
+    if (!dataSets?.length) return false
+    const { records, dataSource } = dataSets[0]
+    // Only offer the action for FeatureLayer-backed data sets with records
+    if (dataSource?.type !== DataSourceTypes.FeatureLayer) return false
+    return (records?.length ?? 0) > 0
   }
 
   async onExecute (
-    dataRecordSet: DataRecordSet,
+    dataSets: DataRecordSet[],
     _dataLevel: DataLevel
   ): Promise<boolean> {
-    const records: DataRecord[] = dataRecordSet.records ?? []
+    const { records } = dataSets[0]
 
-    getAppStore().dispatch(
-      appActions.widgetStatePropChange(this.widgetId, 'selectedRecords', records)
+    // MutableStoreManager handles class instances (DataRecord, Graphic, etc.)
+    // that cannot be JSON-serialized into Redux.
+    MutableStoreManager.getInstance().updateStateValue(
+      this.widgetId,
+      'selectedRecords',
+      records ?? []
     )
 
     return true

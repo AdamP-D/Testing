@@ -6,17 +6,13 @@
   "exbVersion": "1.13.0",
   "author": "",
   "description": "An improved Edit widget that receives selected features from other widgets via the Message Framework and participates in data actions.",
+  "dependency": "jimu-arcgis",
   "translatedLocales": ["en"],
   "properties": {
+    "hasConfig": true,
     "hasEmbeddedLayout": false,
     "supportedWidgetPanelSizes": ["default", "auto"]
   },
-  "publishMessages": [
-    {
-      "name": "record-update",
-      "description": "Published when a feature is successfully saved."
-    }
-  ],
   "messageActions": [
     {
       "name": "receive-selected-records",
@@ -28,8 +24,7 @@
     {
       "name": "edit-action",
       "label": "Edit",
-      "uri": "data-actions/edit-data-action",
-      "icon": ""
+      "uri": "data-actions/edit-data-action"
     }
   ]
 }

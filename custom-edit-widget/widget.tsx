@@ -1,42 +1,42 @@
 /** @jsx jsx */
+/**
+ * Custom Edit Widget for ArcGIS Experience Builder Developer Edition
+ *
+ * Receives selected features from:
+ *   (a) Map/other widgets via the Message Framework (DataRecordsSelectionChangeMessage)
+ *   (b) Any data-aware widget (Table, List, …) via the "Edit" data action
+ *
+ * Renders an ArcGIS FeatureForm for attribute editing and saves via applyEdits.
+ */
 import {
   React,
-  AllWidgetProps,
   jsx,
   css,
-  DataRecord,
+  type AllWidgetProps,
+  type DataRecord,
   DataSourceManager,
-  FeatureLayerDataSource,
-  QueriableDataSource,
-  getAppStore,
-  appActions,
-  MessageManager,
-  MessageType,
-  DataRecordsSelectionChangeMessage
+  type FeatureLayerDataSource,
+  MutableStoreManager
 } from 'jimu-core'
+import { loadArcGISJSAPIModules } from 'jimu-arcgis'
 import { Button, Alert, Loading } from 'jimu-ui'
 import type { IMConfig } from './config'
 
-const { useState, useEffect, useRef, useCallback } = React
+const { useState, useEffect, useRef, useMemo, useCallback } = React
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-interface EditableField {
-  name: string
-  alias: string
-  type: string
-  editable: boolean
-  nullable: boolean
-  domain?: { type: string; codedValues?: Array<{ code: any; name: string }> }
-  length?: number
+interface RecordSnapshot {
+  id: string
+  data: Record<string, any>
 }
 
 type FeedbackMsg = { kind: 'success' | 'error'; text: string }
 
 // ---------------------------------------------------------------------------
-// Styles (Emotion CSS-in-JS — standard ExB pattern)
+// Styles
 // ---------------------------------------------------------------------------
 
 const getStyle = () => css`
@@ -48,6 +48,7 @@ const getStyle = () => css`
     background: var(--sys-color-surface-paper, #fff);
     font-family: var(--ref-typeface-noto-sans-regular, "Avenir Next", Arial, sans-serif);
     font-size: 14px;
+    color: var(--ref-palette-neutral-1100, #1a1a1a);
   }
 
   /* ── Header ─────────────────────────────────────── */
@@ -87,11 +88,10 @@ const getStyle = () => css`
     padding: 32px 24px;
     text-align: center;
     gap: 10px;
-    color: var(--ref-palette-neutral-700, #555);
   }
   .ced-empty-icon {
-    font-size: 40px;
-    opacity: 0.35;
+    font-size: 38px;
+    opacity: 0.3;
   }
   .ced-empty-title {
     font-size: 14px;
@@ -100,15 +100,15 @@ const getStyle = () => css`
   }
   .ced-empty-hint {
     font-size: 12px;
-    line-height: 1.5;
+    line-height: 1.6;
     max-width: 280px;
-    color: var(--ref-palette-neutral-600, #777);
+    color: var(--ref-palette-neutral-700, #666);
   }
 
   /* ── Feature list (multi-select summary) ─────────── */
   .ced-feature-list {
     border-bottom: 1px solid var(--ref-palette-neutral-300, #e0e0e0);
-    max-height: 120px;
+    max-height: 110px;
     overflow-y: auto;
     flex-shrink: 0;
   }
@@ -119,11 +119,9 @@ const getStyle = () => css`
     cursor: pointer;
     font-size: 13px;
     border-left: 3px solid transparent;
-    transition: background 0.15s;
+    transition: background 0.12s;
   }
-  .ced-feature-list-item:hover {
-    background: var(--ref-palette-neutral-100, #f5f5f5);
-  }
+  .ced-feature-list-item:hover { background: var(--ref-palette-neutral-100, #f4f4f4); }
   .ced-feature-list-item.active {
     border-left-color: var(--sys-color-primary-main, #0079c1);
     background: var(--ref-palette-primary-100, #e8f3fb);
@@ -146,20 +144,8 @@ const getStyle = () => css`
     border-bottom: 1px solid var(--ref-palette-neutral-300, #e0e0e0);
     flex-shrink: 0;
   }
-  .ced-nav-label {
-    font-size: 12px;
-    color: var(--ref-palette-neutral-700, #555);
-  }
-  .ced-nav-btns {
-    display: flex;
-    gap: 4px;
-  }
-  .ced-nav-btn {
-    padding: 2px 10px;
-    min-width: 0;
-    font-size: 16px;
-    line-height: 1.2;
-  }
+  .ced-nav-label { font-size: 12px; color: var(--ref-palette-neutral-700, #555); }
+  .ced-nav-btns { display: flex; gap: 4px; }
 
   /* ── Form area ────────────────────────────────────── */
   .ced-form {
@@ -174,29 +160,20 @@ const getStyle = () => css`
     flex-direction: column;
     gap: 10px;
     height: 100%;
-    color: var(--ref-palette-neutral-600, #777);
     font-size: 13px;
+    color: var(--ref-palette-neutral-700, #666);
   }
   /* Container where ArcGIS FeatureForm mounts */
-  .ced-esri-form-container {
-    min-height: 40px;
-  }
-  /* Fallback custom form */
-  .ced-field-list {
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
-  }
-  .ced-field {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
+  .ced-esri-form { min-height: 40px; }
+
+  /* Fallback attribute form */
+  .ced-field-list { display: flex; flex-direction: column; gap: 14px; }
+  .ced-field { display: flex; flex-direction: column; gap: 4px; }
   .ced-field-label {
     font-size: 11px;
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.6px;
+    letter-spacing: 0.5px;
     color: var(--ref-palette-neutral-800, #444);
   }
   .ced-field-input {
@@ -207,27 +184,19 @@ const getStyle = () => css`
     border-radius: 4px;
     font-size: 13px;
     font-family: inherit;
-    background: #fff;
-    color: var(--ref-palette-neutral-900, #222);
+    color: var(--ref-palette-neutral-1100, #1a1a1a);
     transition: border-color 0.15s, box-shadow 0.15s;
+    background: #fff;
   }
   .ced-field-input:focus {
     outline: none;
     border-color: var(--sys-color-primary-main, #0079c1);
     box-shadow: 0 0 0 2px rgba(0,121,193,0.15);
   }
-  .ced-field-input:disabled {
-    background: var(--ref-palette-neutral-100, #f5f5f5);
-    color: var(--ref-palette-neutral-600, #888);
-  }
-  .ced-no-fields {
-    text-align: center;
-    color: var(--ref-palette-neutral-600, #888);
-    font-size: 13px;
-    padding: 24px 0;
-  }
+  .ced-field-input:disabled { background: var(--ref-palette-neutral-100, #f5f5f5); color: #888; }
+  .ced-no-fields { text-align: center; color: #888; font-size: 13px; padding: 24px 0; }
 
-  /* ── Confirm delete banner ────────────────────────── */
+  /* ── Confirm delete ───────────────────────────────── */
   .ced-confirm-delete {
     margin: 0 14px 10px;
     padding: 10px 12px;
@@ -236,20 +205,11 @@ const getStyle = () => css`
     border-radius: 4px;
     font-size: 13px;
   }
-  .ced-confirm-delete p {
-    margin: 0 0 8px;
-    font-weight: 500;
-  }
-  .ced-confirm-btns {
-    display: flex;
-    gap: 8px;
-  }
+  .ced-confirm-delete p { margin: 0 0 8px; font-weight: 500; }
+  .ced-confirm-btns { display: flex; gap: 8px; }
 
-  /* ── Feedback alert wrapper ───────────────────────── */
-  .ced-alert {
-    padding: 0 14px 10px;
-    flex-shrink: 0;
-  }
+  /* ── Feedback alert ───────────────────────────────── */
+  .ced-alert { padding: 0 14px 10px; flex-shrink: 0; }
 
   /* ── Actions bar ──────────────────────────────────── */
   .ced-actions {
@@ -261,28 +221,23 @@ const getStyle = () => css`
     flex-shrink: 0;
     background: var(--sys-color-surface-paper, #fff);
   }
-  .ced-actions-spacer { flex: 1; }
+  .ced-spacer { flex: 1; }
 `
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Returns a human-readable label for a record (uses display field or OID). */
 function getRecordLabel (record: DataRecord, index: number): string {
   try {
-    const data = record.getData()
-    // Try common display field names
-    for (const key of ['name', 'Name', 'NAME', 'label', 'Label', 'title', 'Title', 'OBJECTID', 'objectid', 'OID', 'oid', 'FID']) {
-      if (data?.[key] != null) return String(data[key])
+    const data = record.getData() ?? {}
+    for (const key of ['name', 'Name', 'NAME', 'label', 'Label', 'title', 'Title', 'OBJECTID', 'FID']) {
+      if (data[key] != null) return String(data[key])
     }
     return `Feature ${index + 1}`
-  } catch {
-    return `Feature ${index + 1}`
-  }
+  } catch { return `Feature ${index + 1}` }
 }
 
-/** Extracts ESRI Graphic from a DataRecord (FeatureLayer records carry .feature). */
 function getFeature (record: DataRecord): any {
   return (record as any)?.feature ?? null
 }
@@ -292,14 +247,31 @@ function getFeature (record: DataRecord): any {
 // ---------------------------------------------------------------------------
 
 const Widget = (props: AllWidgetProps<IMConfig>) => {
-  const { id: widgetId, config, widgetState, useDataSources, intl } = props
+  const { id: widgetId, config, stateProps, mutableStateProps, useDataSources } = props
 
-  // Records injected by message action or data action
-  const selectedRecords: DataRecord[] = (widgetState as any)?.selectedRecords ?? []
+  // ── Record sources ──────────────────────────────────────────────────────
+  // Data action delivers live DataRecord[] via MutableStoreManager
+  const liveRecords: DataRecord[] = useMemo(
+    () => (mutableStateProps as any)?.selectedRecords ?? [],
+    [mutableStateProps]
+  )
+  // Message action delivers serializable snapshots via Redux widgetState
+  const snapshots: RecordSnapshot[] = useMemo(
+    () => (stateProps as any)?.selectedRecordSnapshots ?? [],
+    [stateProps]
+  )
 
+  // Prefer live records (data action path); fall back to snapshot count for display
+  const hasLiveRecords = liveRecords.length > 0
+  const totalCount = hasLiveRecords ? liveRecords.length : snapshots.length
+
+  // ── State ───────────────────────────────────────────────────────────────
   const [currentIndex, setCurrentIndex] = useState(0)
   const [editedValues, setEditedValues] = useState<Record<string, any>>({})
-  const [fields, setFields] = useState<EditableField[]>([])
+  const [fields, setFields] = useState<Array<{
+    name: string; alias: string; type: string
+    nullable: boolean; domain?: any; length?: number
+  }>>([])
   const [isLoading, setIsLoading] = useState(false)
   const [useEsriForm, setUseEsriForm] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
@@ -307,25 +279,29 @@ const Widget = (props: AllWidgetProps<IMConfig>) => {
   const [feedback, setFeedback] = useState<FeedbackMsg | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
 
-  const esriFormContainerRef = useRef<HTMLDivElement>(null)
+  const esriFormRef = useRef<HTMLDivElement>(null)
   const featureFormRef = useRef<any>(null)
 
-  const hasRecords = selectedRecords.length > 0
-  const currentRecord = hasRecords ? selectedRecords[currentIndex] ?? selectedRecords[0] : null
-  const showList = (config?.showFeatureList ?? false) && selectedRecords.length > 1
+  const currentRecord: DataRecord | null = hasLiveRecords
+    ? liveRecords[currentIndex] ?? liveRecords[0]
+    : null
+
+  const hasRecords = totalCount > 0
   const canUpdate = config?.enableUpdate !== false
   const canDelete = config?.enableDelete !== false
+  const showList = (config?.showFeatureList ?? false) && liveRecords.length > 1
 
-  // Reset index when selection count changes
+  // ── Reset on new selection ───────────────────────────────────────────────
   useEffect(() => {
-    setCurrentIndex(prev => (prev >= selectedRecords.length ? 0 : prev))
+    setCurrentIndex(0)
     setFeedback(null)
     setConfirmDelete(false)
-  }, [selectedRecords.length])
+  }, [totalCount])
 
-  // Load field metadata + init form when the current record changes
+  // ── Load / mount FeatureForm when current record changes ─────────────────
   useEffect(() => {
     if (!currentRecord) {
+      destroyEsriForm()
       setFields([])
       setEditedValues({})
       setUseEsriForm(false)
@@ -333,101 +309,101 @@ const Widget = (props: AllWidgetProps<IMConfig>) => {
     }
 
     const feature = getFeature(currentRecord)
+    if (!feature) {
+      // No graphic — render a simple key/value fallback from getData()
+      setEditedValues({ ...currentRecord.getData() })
+      setFields([])
+      setUseEsriForm(false)
+      return
+    }
 
-    if (feature) {
-      // Extract editable fields from the layer definition
-      const layer = feature.layer
-      if (layer?.fields) {
-        const skipNames = new Set(['globalid', 'objectid', 'objectid_1', 'shape', 'shape__area', 'shape__length'])
-        const hiddenSet = new Set((config?.hiddenFields ?? []).map((f: string) => f.toLowerCase()))
-        const editableFields: EditableField[] = layer.fields
-          .filter((f: any) =>
-            f.editable &&
-            !skipNames.has(f.name.toLowerCase()) &&
-            !hiddenSet.has(f.name.toLowerCase())
-          )
+    // Populate the fallback form fields from the layer definition
+    const layer = feature.layer
+    if (layer?.fields) {
+      const skip = new Set(['globalid', 'objectid', 'objectid_1', 'shape', 'shape__area', 'shape__length'])
+      const hidden = new Set((config?.hiddenFields ?? []).map((f: string) => f.toLowerCase()))
+      setFields(
+        layer.fields
+          .filter((f: any) => f.editable && !skip.has(f.name.toLowerCase()) && !hidden.has(f.name.toLowerCase()))
           .map((f: any) => ({
             name: f.name,
             alias: f.alias || f.name,
             type: f.type,
-            editable: f.editable,
             nullable: f.nullable,
             domain: f.domain ?? null,
             length: f.length
           }))
-        setFields(editableFields)
-      }
-      // Seed edited values from current attributes
-      setEditedValues({ ...feature.attributes })
-      // Mount ArcGIS FeatureForm
-      mountEsriForm(feature)
-    } else {
-      // No ESRI graphic — use plain record data
-      const data = currentRecord.getData() ?? {}
-      setEditedValues({ ...data })
-      setFields([])
-      setUseEsriForm(false)
+      )
     }
+    setEditedValues({ ...feature.attributes })
 
-    return () => {
-      destroyEsriForm()
-    }
+    // Attempt to mount ArcGIS FeatureForm
+    mountEsriForm(feature)
+
+    return () => { destroyEsriForm() }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentRecord?.getId()])
 
-  // ---------------------------------------------------------------------------
-  // ArcGIS FeatureForm lifecycle
-  // ---------------------------------------------------------------------------
+  // ── ArcGIS FeatureForm lifecycle ─────────────────────────────────────────
 
   const destroyEsriForm = () => {
     if (featureFormRef.current) {
       try { featureFormRef.current.destroy() } catch { /* ignore */ }
       featureFormRef.current = null
     }
+    if (esriFormRef.current) esriFormRef.current.innerHTML = ''
   }
 
   const mountEsriForm = async (feature: any) => {
-    if (!esriFormContainerRef.current) return
+    if (!esriFormRef.current) return
     setIsLoading(true)
     setUseEsriForm(false)
     destroyEsriForm()
 
-    try {
-      const { default: FeatureForm } = await import('esri/widgets/FeatureForm')
+    let cancelled = false
 
-      // Clear any lingering DOM
-      esriFormContainerRef.current.innerHTML = ''
+    try {
+      // loadArcGISJSAPIModules is the correct ExB API — requires "dependency": "jimu-arcgis" in manifest.json
+      const [FeatureForm] = await loadArcGISJSAPIModules(['esri/widgets/FeatureForm'])
+      if (cancelled || !esriFormRef.current) return
+
+      // Resolve the layer; prefer the live reference on the graphic
+      const dsId = useDataSources?.[0]?.dataSourceId
+      const ds = dsId ? DataSourceManager.getInstance().getDataSource(dsId) as FeatureLayerDataSource : null
+      const layer = feature.layer ?? ds?.layer ?? null
+
       const formEl = document.createElement('div')
-      esriFormContainerRef.current.appendChild(formEl)
+      esriFormRef.current.appendChild(formEl)
 
       const form = new FeatureForm({
         container: formEl,
         feature,
-        layer: feature.layer
+        layer
       })
 
       featureFormRef.current = form
       setUseEsriForm(true)
     } catch (err) {
-      // ArcGIS JS API not available in this context — fall back to custom form
-      console.warn('[custom-edit] FeatureForm unavailable, using fallback form.', err)
-      setUseEsriForm(false)
+      if (!cancelled) {
+        // JSAPI unavailable in this environment — the fallback form will render
+        console.warn('[custom-edit] FeatureForm unavailable, using fallback form.', err)
+        setUseEsriForm(false)
+      }
     } finally {
-      setIsLoading(false)
+      if (!cancelled) setIsLoading(false)
     }
+
+    return () => { cancelled = true }
   }
 
-  // ---------------------------------------------------------------------------
-  // Field change (fallback form only)
-  // ---------------------------------------------------------------------------
+  // ── Field change (fallback form) ─────────────────────────────────────────
 
   const handleFieldChange = useCallback((name: string, value: any) => {
     setEditedValues(prev => ({ ...prev, [name]: value }))
     setFeedback(null)
   }, [])
 
-  // ---------------------------------------------------------------------------
-  // Save
-  // ---------------------------------------------------------------------------
+  // ── Save ─────────────────────────────────────────────────────────────────
 
   const handleSave = async () => {
     if (!currentRecord || isSaving) return
@@ -438,42 +414,28 @@ const Widget = (props: AllWidgetProps<IMConfig>) => {
       const feature = getFeature(currentRecord)
 
       if (featureFormRef.current) {
-        // Let FeatureForm write values to the feature
+        // Trigger FeatureForm validation + attribute write, then applyEdits
         featureFormRef.current.submit()
         const updatedFeature = featureFormRef.current.feature ?? feature
+        const layer = updatedFeature?.layer
+        if (!layer) throw new Error('Feature layer not available.')
 
-        const result = await updatedFeature.layer.applyEdits({ updateFeatures: [updatedFeature] })
-        const err = result?.updateFeatureResults?.[0]?.error
-        if (err) throw new Error(err.description ?? err.message ?? 'Unknown error')
+        const result = await layer.applyEdits({ updateFeatures: [updatedFeature] })
+        const applyErr = result?.updateFeatureResults?.[0]?.error
+        if (applyErr) throw new Error(applyErr.description ?? applyErr.message ?? 'Apply edits failed.')
 
-      } else if (feature) {
-        // Fallback: manually apply values
+      } else if (feature?.layer) {
+        // Fallback: write manually-edited values into graphic attributes
         Object.assign(feature.attributes, editedValues)
         const result = await feature.layer.applyEdits({ updateFeatures: [feature] })
-        const err = result?.updateFeatureResults?.[0]?.error
-        if (err) throw new Error(err.description ?? err.message ?? 'Unknown error')
+        const applyErr = result?.updateFeatureResults?.[0]?.error
+        if (applyErr) throw new Error(applyErr.description ?? applyErr.message ?? 'Apply edits failed.')
 
       } else {
-        // Pure DataSource path (no ESRI graphic)
-        const dsId = useDataSources?.[0]?.dataSourceId
-        if (dsId) {
-          const ds = DataSourceManager.getInstance().getDataSource(dsId) as FeatureLayerDataSource
-          if (typeof (ds as any).updateRecord === 'function') {
-            await (ds as any).updateRecord({ record: currentRecord, attributes: editedValues })
-          } else {
-            throw new Error('Data source does not support record updates.')
-          }
-        } else {
-          throw new Error('No feature layer available for saving.')
-        }
+        throw new Error('No editable feature layer available. Ensure the layer has editing enabled.')
       }
 
       setFeedback({ kind: 'success', text: 'Changes saved successfully.' })
-
-      // Publish a message so other widgets can react to the save
-      MessageManager.getInstance().publishMessage(
-        new DataRecordsSelectionChangeMessage(widgetId, [currentRecord])
-      )
     } catch (err: any) {
       setFeedback({ kind: 'error', text: `Save failed: ${err?.message ?? 'Unknown error'}` })
     } finally {
@@ -481,15 +443,10 @@ const Widget = (props: AllWidgetProps<IMConfig>) => {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Delete
-  // ---------------------------------------------------------------------------
+  // ── Delete ───────────────────────────────────────────────────────────────
 
   const handleDeleteClick = () => {
-    if (!confirmDelete) {
-      setConfirmDelete(true)
-      return
-    }
+    if (!confirmDelete) { setConfirmDelete(true); return }
     performDelete()
   }
 
@@ -503,15 +460,15 @@ const Widget = (props: AllWidgetProps<IMConfig>) => {
       if (!feature?.layer) throw new Error('No feature layer available for deletion.')
 
       const result = await feature.layer.applyEdits({ deleteFeatures: [feature] })
-      const err = result?.deleteFeatureResults?.[0]?.error
-      if (err) throw new Error(err.description ?? err.message ?? 'Unknown error')
+      const applyErr = result?.deleteFeatureResults?.[0]?.error
+      if (applyErr) throw new Error(applyErr.description ?? applyErr.message ?? 'Delete failed.')
 
       setFeedback({ kind: 'success', text: 'Feature deleted successfully.' })
       setConfirmDelete(false)
 
-      // Remove the deleted record from widget state
-      const remaining = selectedRecords.filter((_, i) => i !== currentIndex)
-      getAppStore().dispatch(appActions.widgetStatePropChange(widgetId, 'selectedRecords', remaining))
+      // Remove the deleted record from mutable store
+      const remaining = liveRecords.filter((_, i) => i !== currentIndex)
+      MutableStoreManager.getInstance().updateStateValue(widgetId, 'selectedRecords', remaining)
       setCurrentIndex(i => Math.min(i, Math.max(0, remaining.length - 1)))
     } catch (err: any) {
       setFeedback({ kind: 'error', text: `Delete failed: ${err?.message ?? 'Unknown error'}` })
@@ -520,41 +477,30 @@ const Widget = (props: AllWidgetProps<IMConfig>) => {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Reset
-  // ---------------------------------------------------------------------------
+  // ── Reset ────────────────────────────────────────────────────────────────
 
   const handleReset = () => {
     const feature = getFeature(currentRecord)
     if (feature) {
       setEditedValues({ ...feature.attributes })
-      if (featureFormRef.current) {
-        // Re-mount the form to discard pending changes
-        mountEsriForm(feature)
-      }
+      if (featureFormRef.current) mountEsriForm(feature)
     }
     setFeedback(null)
     setConfirmDelete(false)
   }
 
-  // ---------------------------------------------------------------------------
-  // Fallback field rendering
-  // ---------------------------------------------------------------------------
+  // ── Fallback field rendering ─────────────────────────────────────────────
 
-  const renderInput = (field: EditableField) => {
+  const renderInput = (field: typeof fields[0]) => {
     const value = editedValues[field.name] ?? ''
     const disabled = !canUpdate
 
     if (field.domain?.type === 'coded-value' || field.domain?.type === 'codedValue') {
       return (
-        <select
-          className="ced-field-input"
-          value={value ?? ''}
-          disabled={disabled}
-          onChange={e => handleFieldChange(field.name, e.target.value)}
-        >
+        <select className="ced-field-input" value={value ?? ''} disabled={disabled}
+          onChange={e => handleFieldChange(field.name, e.target.value)}>
           {field.nullable && <option value="">— Select —</option>}
-          {(field.domain.codedValues ?? []).map(cv => (
+          {(field.domain.codedValues ?? []).map((cv: any) => (
             <option key={cv.code} value={cv.code}>{cv.name}</option>
           ))}
         </select>
@@ -566,142 +512,86 @@ const Widget = (props: AllWidgetProps<IMConfig>) => {
       case 'small-integer':
       case 'big-integer':
         return (
-          <input
-            type="number"
-            step="1"
-            className="ced-field-input"
-            value={value ?? ''}
-            disabled={disabled}
-            onChange={e => handleFieldChange(field.name, e.target.value === '' ? null : parseInt(e.target.value, 10))}
-          />
+          <input type="number" step="1" className="ced-field-input" value={value ?? ''} disabled={disabled}
+            onChange={e => handleFieldChange(field.name, e.target.value === '' ? null : parseInt(e.target.value, 10))} />
         )
       case 'double':
       case 'single':
         return (
-          <input
-            type="number"
-            step="any"
-            className="ced-field-input"
-            value={value ?? ''}
-            disabled={disabled}
-            onChange={e => handleFieldChange(field.name, e.target.value === '' ? null : parseFloat(e.target.value))}
-          />
+          <input type="number" step="any" className="ced-field-input" value={value ?? ''} disabled={disabled}
+            onChange={e => handleFieldChange(field.name, e.target.value === '' ? null : parseFloat(e.target.value))} />
         )
       case 'date':
         return (
-          <input
-            type="datetime-local"
-            className="ced-field-input"
-            value={value ? new Date(value).toISOString().slice(0, 16) : ''}
-            disabled={disabled}
-            onChange={e => handleFieldChange(field.name, e.target.value ? new Date(e.target.value).getTime() : null)}
-          />
+          <input type="datetime-local" className="ced-field-input"
+            value={value ? new Date(value).toISOString().slice(0, 16) : ''} disabled={disabled}
+            onChange={e => handleFieldChange(field.name, e.target.value ? new Date(e.target.value).getTime() : null)} />
         )
       default:
         return (
-          <input
-            type="text"
-            className="ced-field-input"
-            value={value ?? ''}
-            maxLength={field.length}
-            disabled={disabled}
-            onChange={e => handleFieldChange(field.name, e.target.value || null)}
-          />
+          <input type="text" className="ced-field-input" value={value ?? ''} maxLength={field.length} disabled={disabled}
+            onChange={e => handleFieldChange(field.name, e.target.value || null)} />
         )
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Render
-  // ---------------------------------------------------------------------------
+  // ── Render ───────────────────────────────────────────────────────────────
 
   return (
     <div css={getStyle()} className="ced-root">
-      {/* ── Header ───────────────────────────────────── */}
+
+      {/* Header */}
       <div className="ced-header">
-        <span className="ced-header-title">
-          {config?.customTitle || 'Custom Edit'}
-        </span>
-        {hasRecords && (
-          <span className="ced-header-badge">{selectedRecords.length}</span>
-        )}
+        <span className="ced-header-title">{config?.customTitle || 'Custom Edit'}</span>
+        {hasRecords && <span className="ced-header-badge">{totalCount}</span>}
       </div>
 
-      {/* ── Empty state ───────────────────────────────── */}
+      {/* Empty state */}
       {!hasRecords && (
         <div className="ced-empty">
           <div className="ced-empty-icon">✏️</div>
           <div className="ced-empty-title">No features selected</div>
           <div className="ced-empty-hint">
-            Select features on a map to edit them here.
+            Select features on a map to edit them here, or use the "Edit" action in a Table or List widget.
             Connect a Map widget via <em>Message Settings</em> → "Data record selection change" → "Edit selected records".
           </div>
         </div>
       )}
 
-      {/* ── Content when records are present ──────────── */}
+      {/* Content */}
       {hasRecords && (
         <>
-          {/* Optional: feature list summary */}
+          {/* Optional feature list */}
           {showList && (
             <div className="ced-feature-list">
-              {selectedRecords.map((rec, i) => (
-                <div
-                  key={rec.getId()}
-                  className={`ced-feature-list-item${i === currentIndex ? ' active' : ''}`}
-                  onClick={() => {
-                    setCurrentIndex(i)
-                    setFeedback(null)
-                    setConfirmDelete(false)
-                  }}
-                >
-                  <span className="ced-feature-list-label">
-                    {getRecordLabel(rec, i)}
-                  </span>
-                  {i === currentIndex && <span>›</span>}
+              {liveRecords.map((rec, i) => (
+                <div key={rec.getId()} className={`ced-feature-list-item${i === currentIndex ? ' active' : ''}`}
+                  onClick={() => { setCurrentIndex(i); setFeedback(null); setConfirmDelete(false) }}>
+                  <span className="ced-feature-list-label">{getRecordLabel(rec, i)}</span>
+                  {i === currentIndex && <span aria-hidden>›</span>}
                 </div>
               ))}
             </div>
           )}
 
-          {/* Navigation bar (always shown when multiple records) */}
-          {selectedRecords.length > 1 && !showList && (
+          {/* Nav bar */}
+          {liveRecords.length > 1 && !showList && (
             <div className="ced-nav">
-              <span className="ced-nav-label">
-                Feature {currentIndex + 1} of {selectedRecords.length}
-              </span>
+              <span className="ced-nav-label">Feature {currentIndex + 1} of {liveRecords.length}</span>
               <div className="ced-nav-btns">
-                <Button
-                  className="ced-nav-btn"
-                  size="sm"
-                  disabled={currentIndex === 0}
-                  onClick={() => {
-                    setCurrentIndex(i => i - 1)
-                    setFeedback(null)
-                    setConfirmDelete(false)
-                  }}
-                  title="Previous"
-                >
-                  ‹
+                <Button size="sm" disabled={currentIndex === 0}
+                  onClick={() => { setCurrentIndex(i => i - 1); setFeedback(null); setConfirmDelete(false) }}>
+                  ‹ Prev
                 </Button>
-                <Button
-                  className="ced-nav-btn"
-                  size="sm"
-                  disabled={currentIndex === selectedRecords.length - 1}
-                  onClick={() => {
-                    setCurrentIndex(i => i + 1)
-                    setFeedback(null)
-                    setConfirmDelete(false)
-                  }}
-                  title="Next"
-                >
-                  ›
+                <Button size="sm" disabled={currentIndex === liveRecords.length - 1}
+                  onClick={() => { setCurrentIndex(i => i + 1); setFeedback(null); setConfirmDelete(false) }}>
+                  Next ›
                 </Button>
               </div>
             </div>
           )}
 
-          {/* ── Form area ──────────────────────────────── */}
+          {/* Form area */}
           <div className="ced-form">
             {isLoading && (
               <div className="ced-loading">
@@ -712,20 +602,15 @@ const Widget = (props: AllWidgetProps<IMConfig>) => {
 
             {!isLoading && (
               <>
-                {/* ArcGIS FeatureForm mounts here */}
-                <div
-                  ref={esriFormContainerRef}
-                  className="ced-esri-form-container"
-                  style={{ display: useEsriForm ? 'block' : 'none' }}
-                />
+                {/* ArcGIS FeatureForm mount point */}
+                <div ref={esriFormRef} className="ced-esri-form"
+                  style={{ display: useEsriForm ? 'block' : 'none' }} />
 
-                {/* Fallback form — shown when FeatureForm is not available */}
+                {/* Fallback form when JSAPI FeatureForm is not available */}
                 {!useEsriForm && (
                   <div className="ced-field-list">
                     {fields.length === 0 && (
-                      <div className="ced-no-fields">
-                        No editable fields found for this feature.
-                      </div>
+                      <div className="ced-no-fields">No editable fields found for this feature.</div>
                     )}
                     {fields.map(field => (
                       <div key={field.name} className="ced-field">
@@ -739,64 +624,39 @@ const Widget = (props: AllWidgetProps<IMConfig>) => {
             )}
           </div>
 
-          {/* ── Feedback alert ──────────────────────────── */}
+          {/* Feedback alert */}
           {feedback && (
             <div className="ced-alert">
-              <Alert
-                type={feedback.kind === 'success' ? 'success' : 'error'}
-                text={feedback.text}
-                closable
-                onClose={() => setFeedback(null)}
-              />
+              <Alert type={feedback.kind === 'success' ? 'success' : 'error'}
+                text={feedback.text} closable onClose={() => setFeedback(null)} />
             </div>
           )}
 
-          {/* ── Confirm delete banner ─────────────────── */}
+          {/* Confirm delete */}
           {confirmDelete && !isDeleting && (
             <div className="ced-confirm-delete">
               <p>Are you sure you want to delete this feature? This cannot be undone.</p>
               <div className="ced-confirm-btns">
-                <Button size="sm" type="danger" onClick={performDelete}>
-                  Yes, delete
-                </Button>
-                <Button size="sm" onClick={() => setConfirmDelete(false)}>
-                  Cancel
-                </Button>
+                <Button size="sm" type="danger" onClick={performDelete}>Yes, delete</Button>
+                <Button size="sm" onClick={() => setConfirmDelete(false)}>Cancel</Button>
               </div>
             </div>
           )}
 
-          {/* ── Actions bar ─────────────────────────────── */}
+          {/* Actions bar */}
           <div className="ced-actions">
             {canDelete && (
-              <Button
-                type="default"
-                size="sm"
-                disabled={isSaving || isDeleting}
-                onClick={handleDeleteClick}
-              >
+              <Button type="default" size="sm" disabled={isSaving || isDeleting}
+                onClick={handleDeleteClick}>
                 {isDeleting ? 'Deleting…' : confirmDelete ? 'Confirm?' : 'Delete'}
               </Button>
             )}
-
-            <div className="ced-actions-spacer" />
-
-            <Button
-              type="default"
-              size="sm"
-              disabled={isSaving || isDeleting}
-              onClick={handleReset}
-            >
+            <div className="ced-spacer" />
+            <Button type="default" size="sm" disabled={isSaving || isDeleting} onClick={handleReset}>
               Reset
             </Button>
-
             {canUpdate && (
-              <Button
-                type="primary"
-                size="sm"
-                disabled={isSaving || isDeleting}
-                onClick={handleSave}
-              >
+              <Button type="primary" size="sm" disabled={isSaving || isDeleting} onClick={handleSave}>
                 {isSaving ? 'Saving…' : 'Save'}
               </Button>
             )}
