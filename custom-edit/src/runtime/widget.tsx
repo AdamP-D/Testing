@@ -36,9 +36,13 @@ type FeedbackMsg = { kind: 'success' | 'error'; text: string }
 
 const getStyle = () => css`
   .ced-root {
+    /* position:absolute + inset:0 locks the widget to its ExB panel edges so
+       it has a true bounded height. height:100% alone doesn't work in ExB
+       because the panel height often doesn't propagate as a constraint. */
+    position: absolute;
+    inset: 0;
     display: flex;
     flex-direction: column;
-    height: 100%;
     overflow: hidden;
     background: var(--sys-color-surface-paper, #fff);
     font-family: var(--ref-typeface-noto-sans-regular, "Avenir Next", Arial, sans-serif);
@@ -212,10 +216,9 @@ const getStyle = () => css`
   /* ── Form area ────────────────────────────────────── */
   .ced-form {
     flex: 1;
-    /* min-height: 0 is required in flex columns — without it the flex item
-       expands past its container instead of scrolling */
-    min-height: 0;
+    min-height: 0;   /* required: lets the flex child shrink so overflow-y works */
     overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
     padding: 16px 14px 8px;
   }
   .ced-loading {
@@ -224,20 +227,28 @@ const getStyle = () => css`
     justify-content: center;
     flex-direction: column;
     gap: 10px;
-    height: 100%;
+    padding: 32px 0;
     font-size: 13px;
     color: var(--ref-palette-neutral-700, #666);
   }
-  /* ArcGIS FeatureForm mount point — let the form's natural height flow */
+  /* FeatureForm mount point: must not have its own scroll or fixed height so
+     the parent .ced-form is the single scroll container. */
   .ced-esri-form {
     width: 100%;
-    overflow: visible;
   }
-  /* The div webpack injected inside ced-esri-form — override any fixed heights
-     the FeatureForm widget may set on its own container element */
-  .ced-esri-form > div {
-    height: auto !important;
+  /* Override ArcGIS FeatureForm widget internal styles that create a second
+     scroll container inside .ced-form, clipping or hijacking the scroll. */
+  .ced-esri-form .esri-widget,
+  .ced-esri-form .esri-feature-form {
     overflow: visible !important;
+    height: auto !important;
+    max-height: none !important;
+  }
+  .ced-esri-form .esri-feature-form__body,
+  .ced-esri-form .esri-feature-form__fields-content {
+    overflow: visible !important;
+    height: auto !important;
+    max-height: none !important;
   }
 
   /* Fallback attribute form */
