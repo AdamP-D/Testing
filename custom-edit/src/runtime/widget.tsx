@@ -212,6 +212,9 @@ const getStyle = () => css`
   /* ── Form area ────────────────────────────────────── */
   .ced-form {
     flex: 1;
+    /* min-height: 0 is required in flex columns — without it the flex item
+       expands past its container instead of scrolling */
+    min-height: 0;
     overflow-y: auto;
     padding: 16px 14px 8px;
   }
@@ -225,8 +228,17 @@ const getStyle = () => css`
     font-size: 13px;
     color: var(--ref-palette-neutral-700, #666);
   }
-  /* Container where ArcGIS FeatureForm mounts */
-  .ced-esri-form { min-height: 40px; }
+  /* ArcGIS FeatureForm mount point — let the form's natural height flow */
+  .ced-esri-form {
+    width: 100%;
+    overflow: visible;
+  }
+  /* The div webpack injected inside ced-esri-form — override any fixed heights
+     the FeatureForm widget may set on its own container element */
+  .ced-esri-form > div {
+    height: auto !important;
+    overflow: visible !important;
+  }
 
   /* Fallback attribute form */
   .ced-field-list { display: flex; flex-direction: column; gap: 14px; }
