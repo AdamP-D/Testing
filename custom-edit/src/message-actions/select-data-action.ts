@@ -4,22 +4,23 @@ import {
   type Message,
   type MessageDescription,
   type DataRecordsSelectionChangeMessage,
-  MutableStoreManager
+  MutableStoreManager,
+  getAppStore,
+  appActions
 } from 'jimu-core'
 
 /**
- * Receives DataRecordsSelectionChangeMessage from other widgets (e.g. a Map
- * widget when features are selected) and forwards the live DataRecord
- * instances to the edit widget via MutableStoreManager — the same channel
- * used by the "Edit" data action — so the widget always has a real Graphic
- * to read field metadata from and to applyEdits() against.
+ * Receives DataRecordsSelectionChangeMessage from other widgets (e.g. Map,
+ * List, Table) and forwards the live DataRecord instances to the edit widget.
  *
- * DataRecord instances are class objects and cannot be placed in the Redux
- * store (appActions.widgetStatePropChange requires serializable data), so
- * MutableStoreManager is the correct mechanism here, not Redux.
+ * Two-channel approach:
+ *  - MutableStoreManager   → live DataRecord[] (class instances, not Redux-safe)
+ *  - Redux widgetStateProp → selectionVersion counter (plain number, reliable
+ *                            re-render trigger even when the same object
+ *                            reference is reused by ExB's mutableStateProps)
  *
  * Wiring in Experience Builder:
- *   Map widget → "Data record selection change"
+ *   Any widget → "Data record selection change"
  *     → Custom Edit → "Edit selected records"
  */
 export default class SelectDataAction extends AbstractMessageAction {
@@ -35,7 +36,6 @@ export default class SelectDataAction extends AbstractMessageAction {
     return MessageType.DataRecordsSelectionChange
   }
 
-  // Return null to skip the per-connection settings panel
   getSettingComponentUri (_messageType: MessageType): string {
     return null
   }
@@ -44,10 +44,23 @@ export default class SelectDataAction extends AbstractMessageAction {
     const msg = message as DataRecordsSelectionChangeMessage
     const records = msg.records ?? []
 
+    // Live records → mutable store (DataRecord instances aren't Redux-safe)
     MutableStoreManager.getInstance().updateStateValue(
       this.widgetId,
       'selectedRecords',
       records
+    )
+
+    // Version counter → Redux (guarantees a component re-render even when
+    // mutableStateProps object identity doesn't change between selections)
+    const current = getAppStore().getState()
+      .widgetsState?.[this.widgetId]?.selectionVersion ?? 0
+    getAppStore().dispatch(
+      appActions.widgetStatePropChange(
+        this.widgetId,
+        'selectionVersion',
+        (current as number) + 1
+      )
     )
 
     return true

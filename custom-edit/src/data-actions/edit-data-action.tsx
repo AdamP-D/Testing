@@ -3,7 +3,9 @@ import {
   type DataRecordSet,
   type DataLevel,
   MutableStoreManager,
-  DataSourceTypes
+  DataSourceTypes,
+  getAppStore,
+  appActions
 } from 'jimu-core'
 
 /**
@@ -34,12 +36,20 @@ export default class EditDataAction extends AbstractDataAction {
   ): Promise<boolean> {
     const { records } = dataSets[0]
 
-    // MutableStoreManager handles class instances (DataRecord, Graphic, etc.)
-    // that cannot be JSON-serialized into Redux.
     MutableStoreManager.getInstance().updateStateValue(
       this.widgetId,
       'selectedRecords',
       records ?? []
+    )
+
+    const current = getAppStore().getState()
+      .widgetsState?.[this.widgetId]?.selectionVersion ?? 0
+    getAppStore().dispatch(
+      appActions.widgetStatePropChange(
+        this.widgetId,
+        'selectionVersion',
+        (current as number) + 1
+      )
     )
 
     return true
